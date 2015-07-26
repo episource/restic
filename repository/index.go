@@ -2,6 +2,7 @@ package repository
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -293,6 +294,19 @@ func (idx *Index) Dump(w io.Writer) error {
 	return nil
 }
 
+// isErrOldIndex returns true if the error may be caused by an old index
+// format.
+func isErrOldIndex(err error) bool {
+	if e, ok := err.(*json.UnmarshalTypeError); ok && e.Value == "array" {
+		return true
+	}
+
+	return false
+}
+
+// ErrOldIndexFormat means an index with the old format was detected.
+var ErrOldIndexFormat = errors.New("index has old format")
+
 // DecodeIndex loads and unserializes an index from rd.
 func DecodeIndex(rd io.Reader) (*Index, backend.IDs, error) {
 	debug.Log("Index.DecodeIndex", "Start decoding index")
@@ -302,6 +316,12 @@ func DecodeIndex(rd io.Reader) (*Index, backend.IDs, error) {
 	err := dec.Decode(&idxJSON)
 	if err != nil {
 		debug.Log("Index.DecodeIndex", "Error %#v", err)
+
+		if isErrOldIndex(err) {
+			debug.Log("Index.DecodeIndex", "index is probably old format, trying that")
+			err = ErrOldIndexFormat
+		}
+
 		return nil, nil, err
 	}
 
