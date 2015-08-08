@@ -19,6 +19,7 @@ type Index struct {
 	pack map[backend.ID]indexEntry
 
 	supersedes backend.IDs
+	id         backend.ID
 }
 
 type indexEntry struct {
@@ -69,7 +70,7 @@ func (idx *Index) Remove(packID backend.ID) {
 	}
 }
 
-// Lookup returns the pack for the id.
+// Lookup returns the pack for the id. length includes crypto.Extension.
 func (idx *Index) Lookup(id backend.ID) (packID *backend.ID, tpe pack.BlobType, offset, length uint, err error) {
 	idx.m.Lock()
 	defer idx.m.Unlock()
@@ -94,9 +95,9 @@ func (idx *Index) Has(id backend.ID) bool {
 	return false
 }
 
-// LookupSize returns the length of the cleartext content behind the
-// given id
-func (idx *Index) LookupSize(id backend.ID) (cleartextLength uint, err error) {
+// LookupPlaintextSize returns the length of the cleartext content (without
+// crypto.Extension) behind the given id.
+func (idx *Index) LookupPlaintextSize(id backend.ID) (cleartextLength uint, err error) {
 	_, _, _, encryptedLength, err := idx.Lookup(id)
 	if err != nil {
 		return 0, err
@@ -106,7 +107,7 @@ func (idx *Index) LookupSize(id backend.ID) (cleartextLength uint, err error) {
 
 // Merge loads all items from other into idx.
 func (idx *Index) Merge(other *Index) {
-	debug.Log("Index.Merge", "Merge index with %p", other)
+	debug.Log("Index.Merge", "Merge index with %v", other.id.Str())
 	idx.m.Lock()
 	defer idx.m.Unlock()
 
@@ -117,6 +118,11 @@ func (idx *Index) Merge(other *Index) {
 
 		idx.pack[k] = v
 	}
+	if !other.id.IsNull() {
+		debug.Log("Index.Merge", "adding index %v to supersedes list", other.id.Str())
+		idx.supersedes = append(idx.supersedes, other.id)
+	}
+
 	debug.Log("Index.Merge", "done merging index")
 }
 
@@ -247,12 +253,14 @@ type jsonOldIndex []*packJSON
 
 // encode writes the JSON serialization of the index filtered by selectFn to enc.
 func (idx *Index) encode(w io.Writer, supersedes backend.IDs, selectFn func(indexEntry) bool) error {
+	debug.Log("Index.encode", "start, supersedes %v", supersedes)
+
 	list, err := idx.generatePackList(selectFn)
 	if err != nil {
 		return err
 	}
 
-	debug.Log("Index.Encode", "done, %d entries selected", len(list))
+	debug.Log("Index.encode", "done, %d entries selected", len(list))
 
 	enc := json.NewEncoder(w)
 	idxJSON := jsonIndex{
@@ -273,6 +281,16 @@ func (idx *Index) Encode(w io.Writer) error {
 	return idx.encode(w, idx.supersedes, func(e indexEntry) bool { return !e.old })
 }
 
+// EncodeAll writes the JSON serialization of the index to the writer w. This
+// contains all blobs, even those from old indexes.
+func (idx *Index) EncodeAll(w io.Writer, supersedes backend.IDs) error {
+	debug.Log("Index.Encode", "encoding full index, supersedes %v", supersedes)
+	idx.m.Lock()
+	defer idx.m.Unlock()
+
+	return idx.encode(w, supersedes, func(e indexEntry) bool { return true })
+}
+
 // Dump writes the pretty-printed JSON representation of the index to w.
 func (idx *Index) Dump(w io.Writer) error {
 	debug.Log("Index.Dump", "dumping index")
@@ -284,7 +302,12 @@ func (idx *Index) Dump(w io.Writer) error {
 		return err
 	}
 
-	buf, err := json.MarshalIndent(list, "", "  ")
+	idxJSON := jsonIndex{
+		Supersedes: idx.supersedes,
+		Packs:      list,
+	}
+
+	buf, err := json.MarshalIndent(idxJSON, "", "  ")
 	if err != nil {
 		return err
 	}

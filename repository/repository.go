@@ -88,7 +88,8 @@ func (r *Repository) LoadAndDecrypt(t backend.Type, id backend.ID) ([]byte, erro
 
 // LoadBlob tries to load and decrypt content identified by t and id from a
 // pack from the backend, the result is stored in plaintextBuf, which must be
-// large enough to hold the complete blob.
+// large enough to hold the complete blob. An error is returned when the hash
+// of the data doesn't match the id.
 func (r *Repository) LoadBlob(t pack.BlobType, id backend.ID, plaintextBuf []byte) ([]byte, error) {
 	debug.Log("Repo.LoadBlob", "load %v with id %v", t, id.Str())
 	// lookup pack
@@ -204,7 +205,7 @@ func (r *Repository) LoadJSONPack(t pack.BlobType, id backend.ID, item interface
 
 // LookupBlobSize returns the size of blob id.
 func (r *Repository) LookupBlobSize(id backend.ID) (uint, error) {
-	return r.Index().LookupSize(id)
+	return r.Index().LookupPlaintextSize(id)
 }
 
 const minPackSize = 4 * chunker.MiB
@@ -284,7 +285,8 @@ func (r *Repository) countPacker() int {
 }
 
 // SaveAndEncrypt encrypts data and stores it to the backend as type t. If data is small
-// enough, it will be packed together with other small blobs.
+// enough, it will be packed together with other small blobs. Returns the id
+// (hash) of the data.
 func (r *Repository) SaveAndEncrypt(t pack.BlobType, data []byte, id *backend.ID) (backend.ID, error) {
 	if id == nil {
 		// compute plaintext hash
@@ -520,10 +522,43 @@ func (r *Repository) SaveIndex() (backend.ID, error) {
 	}
 
 	sid := blob.ID()
-
 	debug.Log("Repo.SaveIndex", "Saved index as %v", sid.Str())
-
 	return sid, nil
+}
+
+// SaveFullIndex saves all data in the index into new index files and removes
+// the old index files. Returned is the IDs for the new index.
+func (r *Repository) SaveFullIndex() (backend.ID, error) {
+	debug.Log("Repo.SaveFullIndex", "Saving index, supersedes %v", r.idx.Supersedes())
+
+	blob, err := r.CreateEncryptedBlob(backend.Index)
+	if err != nil {
+		return backend.ID{}, err
+	}
+
+	err = r.idx.EncodeAll(blob, r.idx.Supersedes())
+	if err != nil {
+		return backend.ID{}, err
+	}
+
+	err = blob.Close()
+	if err != nil {
+		return backend.ID{}, err
+	}
+
+	newIndexID := blob.ID()
+	debug.Log("Repo.SaveFullIndex", "Saved full index as %v", newIndexID.Str())
+
+	for _, id := range r.idx.Supersedes() {
+		err = r.be.Remove(backend.Index, id.String())
+		if err != nil {
+			return newIndexID, err
+		}
+
+		debug.Log("Repo.SaveFullIndex", "removed superseded index %v", id.Str())
+	}
+
+	return newIndexID, nil
 }
 
 const loadIndexParallelism = 20
@@ -634,6 +669,10 @@ func LoadIndexWithDecoder(repo *Repository, id string, fn func(io.Reader) (*Inde
 	idx, err := fn(rd)
 	if err != nil {
 		debug.Log("LoadIndexWithDecoder", "error while decoding index %v: %v", id, err)
+		return nil, err
+	}
+	idx.id, err = backend.ParseID(id)
+	if err != nil {
 		return nil, err
 	}
 
