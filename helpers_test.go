@@ -1,48 +1,14 @@
-package checker_test
+package restic_test
 
 import (
 	"testing"
 
 	"github.com/restic/restic"
 	"github.com/restic/restic/backend"
-	"github.com/restic/restic/checker"
-
-	. "github.com/restic/restic/test"
 )
+import . "github.com/restic/restic/test"
 
-var findPackTests = []struct {
-	blobIDs backend.IDs
-	packIDs backend.IDSet
-}{
-	{
-		backend.IDs{
-			ParseID("534f211b4fc2cf5b362a24e8eba22db5372a75b7e974603ff9263f5a471760f4"),
-			ParseID("51aa04744b518c6a85b4e7643cfa99d58789c2a6ca2a3fda831fa3032f28535c"),
-			ParseID("454515bca5f4f60349a527bd814cc2681bc3625716460cc6310771c966d8a3bf"),
-			ParseID("c01952de4d91da1b1b80bc6e06eaa4ec21523f4853b69dc8231708b9b7ec62d8"),
-		},
-		backend.IDSet{
-			ParseID("19a731a515618ec8b75fc0ff3b887d8feb83aef1001c9899f6702761142ed068"): struct{}{},
-			ParseID("657f7fb64f6a854fff6fe9279998ee09034901eded4e6db9bcee0e59745bbce6"): struct{}{},
-		},
-	},
-}
-
-func TestRepackerFindPacks(t *testing.T) {
-	WithTestEnvironment(t, checkerTestData, func(repodir string) {
-		repo := OpenLocalRepo(t, repodir)
-
-		OK(t, repo.LoadIndex())
-
-		for _, test := range findPackTests {
-			packIDs, err := checker.FindPacksforBlobs(repo, test.blobIDs)
-			OK(t, err)
-			Equals(t, test.packIDs, packIDs)
-		}
-	})
-}
-
-var repackBlobIDs = backend.IDs{
+var collectTestIDs = backend.IDs{
 	ParseID("f41c2089a9d58a4b0bf39369fa37588e6578c928aea8e90a4490a6315b9905c1"),
 	ParseID("04fdf6119abd8da279e5c25b0492704d1676043dc2cba1d4f8d40a260d61da65"),
 	ParseID("db5ac30c70aaba7fef03db6be91e8d9438e1a417f759f417237efa3482e1f22b"),
@@ -67,28 +33,30 @@ var repackBlobIDs = backend.IDs{
 	ParseID("bec3a53d7dc737f9a9bee68b107ec9e8ad722019f649b34d474b9982c3a3fec7"),
 }
 
-func TestRepackBlobs(t *testing.T) {
-	WithTestEnvironment(t, checkerTestData, func(repodir string) {
-		repo := OpenLocalRepo(t, repodir)
-		OK(t, repo.LoadIndex())
+func listIDs() <-chan backend.ID {
+	ch := make(chan backend.ID)
 
-		oldPacks := restic.Collect(repo.List(backend.Data, nil))
+	go func() {
+		defer close(ch)
 
-		packIDs, err := checker.RepackBlobs(repo, repackBlobIDs)
-		OK(t, err)
-
-		t.Logf("new pack IDs: %v", packIDs)
-
-		Assert(t, len(packIDs) < len(oldPacks),
-			"got %d new pack IDs, expected 2", len(packIDs))
-
-		for _, id := range oldPacks {
-			OK(t, repo.Backend().Remove(backend.Data, id.String()))
+		for _, id := range collectTestIDs {
+			ch <- id
 		}
+	}()
 
-		chkr := checker.New(repo)
-		OK(t, chkr.LoadIndex())
-		OKs(t, checkPacks(chkr))
-		OKs(t, checkStruct(chkr))
-	})
+	return ch
+}
+
+func TestCollectIDs(t *testing.T) {
+	list := restic.Collect(listIDs())
+
+	if len(list) != len(collectTestIDs) {
+		t.Fatalf("expected length %d, got %d", len(collectTestIDs), len(list))
+	}
+
+	for i, id := range collectTestIDs {
+		if !id.Equal(list[i]) {
+			t.Fatalf("wrong list element %d: %v != %v", i, id.Str(), list[i].Str())
+		}
+	}
 }

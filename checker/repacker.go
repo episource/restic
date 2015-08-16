@@ -18,7 +18,7 @@ type Repacker struct {
 }
 
 // NewRepacker returns a new repacker that (when Repack() in run) cleans up the
-// repository and creates new packs and indexs so that all blobs in unusedBlobs
+// repository and creates new packs and indexes so that all blobs in unusedBlobs
 // aren't used any more.
 func NewRepacker(repo *repository.Repository, unusedBlobs []backend.ID) *Repacker {
 	return &Repacker{
@@ -62,8 +62,8 @@ func FindPacksforBlobs(repo *repository.Repository, blobs []backend.ID) (backend
 }
 
 // RepackBlobs reads and packs all the blobs in blobIDs into new pack files.
-func RepackBlobs(repo *repository.Repository, blobIDs backend.IDs) (packIDs map[backend.ID]struct{}, err error) {
-	packIDs = make(map[backend.ID]struct{})
+func RepackBlobs(repo *repository.Repository, blobIDs backend.IDs) (packIDs backend.IDSet, err error) {
+	packIDs = backend.NewIDSet()
 
 	for _, id := range blobIDs {
 		_, tpe, _, length, err := repo.Index().Lookup(id)
@@ -115,7 +115,7 @@ func RepackBlobs(repo *repository.Repository, blobIDs backend.IDs) (packIDs map[
 		}
 
 		debug.Log("RepackBlobs", "blob %v has been saved to pack %v", id.Str(), packID.Str())
-		packIDs[*packID] = struct{}{}
+		packIDs.Insert(*packID)
 	}
 
 	return packIDs, nil
